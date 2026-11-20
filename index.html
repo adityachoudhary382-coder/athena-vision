@@ -36,6 +36,7 @@
     }
     body.hand-active .spin-cw, body.hand-active .spin-ccw { animation-play-state: paused; }
     body.hand-active .top-telemetry { opacity: 0 !important; pointer-events: none !important; }
+    body.cam-live .glass, body.cam-live .pro-dock, body.cam-live .pop-sheet, body.cam-live #arWindow { box-shadow: none !important; }
 
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .hidden { display: none !important; }
@@ -2302,6 +2303,7 @@
         $('simBackdrop').style.display = '';
         $('simBackdrop').style.opacity = '1';
         st.camOn = false;
+        document.body.classList.remove('cam-live');
         st.torchOn = false;
         if ($('btnTorch')) $('btnTorch').classList.remove('active');
         $('btnCam').textContent = 'CAM';
@@ -2375,6 +2377,7 @@
           try { await vid.play(); } catch (_) {}
           $('simBackdrop').style.display = 'none';
           st.camOn = true;
+          document.body.classList.add('cam-live');
           $('btnCam').textContent = 'LIVE';
           $('btnCam').classList.add('active');
           $('optVal').textContent = '1.0x FULLSCREEN';
@@ -2602,7 +2605,7 @@
             return;
           }
           // 3. 3DoF GYROSCOPE ON / OFF (handles "gyro", "jiro", "3 dof", "3d of", "3dof")
-          if (hasW(/\b(gyro|gyroscope|jiro|3\s*dof|3d\s*of|three\s*dof)\b/)) {
+          if (hasW(/\b(gyro|giro|gyroscope|jiro|3\s*dof|3d\s*of|three\s*dof)\b/)) {
             const target = wantOff ? false : (wantOn ? true : !st.gyro);
             await enableGyro(target);
             pushResp('3DoF GYRO', target ? '3DoF gyroscope activated.' : '3DoF gyroscope paused.');
@@ -2827,24 +2830,31 @@
           activeRec = rec;
           rec.lang = st.lang || 'en-US';
           rec.continuous = false;
-          rec.interimResults = false;
-          rec.maxAlternatives = 1;
+          rec.interimResults = true;
+          rec.maxAlternatives = 3;
           st.listening = true;
           $('voiceLbl').textContent = 'LISTENING...';
           $('btnVoice').classList.add('active');
           $('eqBars').classList.remove('hidden');
           beep(760, 0.07, 'sine');
-          toast('Speak now...');
+          toast('Speak any command now...');
           eqInt = setInterval(() => {
+            if (window.innerWidth < 900) return;
             document.querySelectorAll('.eq-bar').forEach((b) => {
               b.style.height = (4 + Math.floor(Math.random() * 13)) + 'px';
             });
-          }, 90);
+          }, 140);
           rec.onresult = (e) => {
-            const heard = e.results && e.results[0] && e.results[0][0] ? e.results[0][0].transcript.trim() : '';
-            if (heard) {
-              toast('Heard: "' + heard + '"');
-              routeQuery(heard, false);
+            const res = e.results && e.results[e.results.length - 1];
+            if (!res || !res[0]) return;
+            const liveTxt = res[0].transcript.trim();
+            if (!res.isFinal) {
+              if ($('mobileRespTxt')) $('mobileRespTxt').textContent = '🎤 ' + liveTxt + '...';
+              return;
+            }
+            if (liveTxt) {
+              toast('Heard: "' + liveTxt + '"');
+              routeQuery(liveTxt, false);
             }
           };
           rec.onerror = (ev) => {
@@ -3044,15 +3054,15 @@
       let oriSource = '';
       let lastMotionT = 0;
 
+      let lastApplyOriT = 0;
       function applyOri(e, src) {
         if (!st.gyro) return;
+        if (e.alpha === null && e.beta === null && e.gamma === null) return;
         if (typeof e.alpha !== 'number' && typeof e.beta !== 'number') return;
-        if (!oriSource) oriSource = src;
-        if (oriSource !== src) return;
         if (!gyroGotData) {
           gyroGotData = true;
           $('btnGyro').textContent = '3DoF:ON';
-          toast('3DoF Gyro Locked (120Hz Smooth)');
+          toast('3DoF Gyro Active');
         }
         const rawYaw = typeof e.alpha === 'number' ? ((360 - e.alpha) % 360) : gyroTgt.yaw;
         const scrAng = (screen.orientation && typeof screen.orientation.angle === 'number') ? screen.orientation.angle : (window.innerWidth > window.innerHeight ? 90 : 0);
@@ -3079,6 +3089,20 @@
         gyroTgt.yaw = rawYaw;
         gyroTgt.pitch = Math.max(-45, Math.min(45, rawPitch - gyroTgt.zeroPitch * 0.35));
         gyroTgt.roll = Math.max(-32, Math.min(32, rawRoll));
+        // Apply smooth EMA directly (throttled 33ms) so Gyro works in EVERY mode (HUD, LAB, SPACE, Range, Level)!
+        const now = performance.now();
+        if (now - lastApplyOriT >= 32) {
+          lastApplyOriT = now;
+          const dy = wrap180(gyroTgt.yaw - st.yaw);
+          const dp = gyroTgt.pitch - st.pitch;
+          const dr = gyroTgt.roll - st.roll;
+          if (Math.abs(dy) > 0.25 || Math.abs(dp) > 0.25 || Math.abs(dr) > 0.25) {
+            st.yaw = (st.yaw + dy * 0.32 + 360) % 360;
+            st.pitch += dp * 0.32;
+            st.roll += dr * 0.32;
+            updateOrientation();
+          }
+        }
       }
       function onOriAbs(e) { applyOri(e, 'abs'); }
       function onOriRel(e) { applyOri(e, 'rel'); }
@@ -3117,7 +3141,6 @@
           oriSource = '';
           gyroTgt.hasZero = false;
           lastMotionT = 0;
-          window.addEventListener('deviceorientationabsolute', onOriAbs, false);
           window.addEventListener('deviceorientation', onOriRel, false);
           window.addEventListener('devicemotion', onMotionFallback, false);
           toast('3DoF Gyro ON — Turn phone left/right');
@@ -3342,17 +3365,22 @@
           wakeRec = new SR();
           wakeRec.lang = st.lang || 'en-US';
           wakeRec.continuous = false; // Single-turn restart is 10x more reliable on Android Chrome!
-          wakeRec.interimResults = false;
+          wakeRec.interimResults = true;
           wakeRec.maxAlternatives = 3;
           $('voiceLbl').textContent = (Date.now() < athenaAwakeUntil) ? 'SPEAK CMD' : 'ATHENA...';
           wakeRec.onresult = (e) => {
-            const res = e.results && e.results[0];
+            const res = e.results && e.results[e.results.length - 1];
             if (!res) return;
-            // Check all top alternatives so "Athena" is never missed by speech recognition!
             let chosen = res[0] ? res[0].transcript.trim() : '';
             for (let i = 0; i < res.length; i++) {
               const alt = res[i].transcript.trim();
               if (ATHENA_WAKE_RE.test(alt)) { chosen = alt; break; }
+            }
+            if (!res.isFinal) {
+              if ((ATHENA_WAKE_RE.test(chosen) || Date.now() < athenaAwakeUntil) && $('mobileRespTxt')) {
+                $('mobileRespTxt').textContent = '🎤 ' + chosen + '...';
+              }
+              return;
             }
             handleAthenaWakePhrase(chosen);
           };
@@ -3563,7 +3591,7 @@
       function drawHolograms(now) {
         if (document.hidden) { requestAnimationFrame(drawHolograms); return; }
         const tNow = now || performance.now();
-        const minGap = (st.handOn || st.camOn) ? 32 : 16; // 30fps with Camera/Hand AR (zero lag!), 60fps when idle
+        const minGap = 33; // Rock-solid 30fps mobile ceiling — eliminates GPU/CPU stutter!
         if (tNow - lastHoloDraw < minGap) { requestAnimationFrame(drawHolograms); return; }
         const dt = Math.min(0.06, Math.max(0.008, (tNow - (lastHoloDraw || tNow)) / 1000));
         lastHoloDraw = tNow;
@@ -5615,8 +5643,8 @@
       }
       // Lightweight 256x144 offscreen canvas for 6x faster zero-lag MediaPipe Hands on mobile!
       const handOff = document.createElement('canvas');
-      handOff.width = 288;
-      handOff.height = 162;
+      handOff.width = 256;
+      handOff.height = 144;
       const handOffCtx = handOff.getContext('2d', { alpha: false });
 
       const hc = { x: window.innerWidth / 2, y: window.innerHeight / 2, pinching: false, pinchFrames: 0, missFrames: 0, lastClick: 0, lastPeace: 0, lastThumb: 0, lastThree: 0, lastRock: 0, lastShaka: 0, lastFour: 0, lastSwipe: 0, prevPalmX: null, prevPalmT: 0, airDraw: false, airStrokes: [], lastGest: '', gestCount: 0, lastResT: 0, hoverEl: null, dragCardId: null };
@@ -5973,11 +6001,11 @@
         if (!st.handOn) return;
         const t = now || performance.now();
         const vid = $('cameraFeed');
-        if (!st.handBusy && (t - lastHandTick) >= 65 && st.camOn && st.handModel && vid.readyState >= 2 && vid.videoWidth > 0) {
+        if (!st.handBusy && (t - lastHandTick) >= 85 && st.camOn && st.handModel && vid.readyState >= 2 && vid.videoWidth > 0) {
           lastHandTick = t;
           st.handBusy = true;
           try {
-            handOffCtx.drawImage(vid, 0, 0, 288, 162);
+            handOffCtx.drawImage(vid, 0, 0, 256, 144);
             await st.handModel.send({ image: handOff });
           } catch (_) {}
           st.handBusy = false;
