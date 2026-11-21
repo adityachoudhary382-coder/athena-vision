@@ -2844,17 +2844,22 @@
               b.style.height = (4 + Math.floor(Math.random() * 13)) + 'px';
             });
           }, 140);
+          let lastHeard = '', handled = false;
           rec.onresult = (e) => {
-            const res = e.results && e.results[e.results.length - 1];
-            if (!res || !res[0]) return;
-            const liveTxt = res[0].transcript.trim();
-            if (!res.isFinal) {
-              if ($('mobileRespTxt')) $('mobileRespTxt').textContent = '🎤 ' + liveTxt + '...';
-              return;
+            let full = '';
+            for (let i = 0; i < e.results.length; i++) {
+              if (e.results[i] && e.results[i][0]) full += e.results[i][0].transcript + ' ';
             }
+            const liveTxt = full.trim();
             if (liveTxt) {
-              toast('Heard: "' + liveTxt + '"');
-              routeQuery(liveTxt, false);
+              lastHeard = liveTxt;
+              if ($('mobileRespTxt')) $('mobileRespTxt').textContent = '🎤 ' + liveTxt;
+            }
+            const lastRes = e.results && e.results[e.results.length - 1];
+            if (lastRes && lastRes.isFinal && lastHeard && !handled) {
+              handled = true;
+              toast('Heard: "' + lastHeard + '"');
+              routeQuery(lastHeard, false);
             }
           };
           rec.onerror = (ev) => {
@@ -2871,7 +2876,14 @@
           rec.onend = () => {
             activeRec = null;
             stopVoiceUI();
-            if (st.wakeOn && !st.aiSpeaking && !st.aiThinking) scheduleHandsFreeListen(550);
+            // Android Chrome fallback: if isFinal never fired before onend, execute lastHeard now!
+            if (!handled && lastHeard) {
+              handled = true;
+              toast('Heard: "' + lastHeard + '"');
+              routeQuery(lastHeard, false);
+            } else if (st.wakeOn && !st.aiSpeaking && !st.aiThinking) {
+              scheduleHandsFreeListen(550);
+            }
           };
           rec.start();
         } catch (e) {
@@ -3368,6 +3380,7 @@
           wakeRec.interimResults = true;
           wakeRec.maxAlternatives = 3;
           $('voiceLbl').textContent = (Date.now() < athenaAwakeUntil) ? 'SPEAK CMD' : 'ATHENA...';
+          let wakeHeard = '', wakeDone = false;
           wakeRec.onresult = (e) => {
             const res = e.results && e.results[e.results.length - 1];
             if (!res) return;
@@ -3376,13 +3389,16 @@
               const alt = res[i].transcript.trim();
               if (ATHENA_WAKE_RE.test(alt)) { chosen = alt; break; }
             }
-            if (!res.isFinal) {
+            if (chosen) {
+              wakeHeard = chosen;
               if ((ATHENA_WAKE_RE.test(chosen) || Date.now() < athenaAwakeUntil) && $('mobileRespTxt')) {
-                $('mobileRespTxt').textContent = '🎤 ' + chosen + '...';
+                $('mobileRespTxt').textContent = '🎤 ' + chosen;
               }
-              return;
             }
-            handleAthenaWakePhrase(chosen);
+            if (res.isFinal && wakeHeard && !wakeDone) {
+              wakeDone = true;
+              handleAthenaWakePhrase(wakeHeard);
+            }
           };
           wakeRec.onerror = (ev) => {
             const code = ev && ev.error ? ev.error : '';
@@ -3395,6 +3411,10 @@
           };
           wakeRec.onend = () => {
             if (!st.listening) $('voiceLbl').textContent = st.wakeOn ? 'AUTO' : 'VOICE';
+            if (!wakeDone && wakeHeard) {
+              wakeDone = true;
+              handleAthenaWakePhrase(wakeHeard);
+            }
             if (st.wakeOn && !st.aiSpeaking && !st.aiThinking) scheduleHandsFreeListen(480);
           };
           wakeRec.start();
